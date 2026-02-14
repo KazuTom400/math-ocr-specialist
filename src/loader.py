@@ -2,85 +2,71 @@ import os
 import yaml
 import torch
 import json
+import requests
 from argparse import Namespace
 from pix2tex.cli import LatexOCR
 
 class RobustLatexOCR:
     def __init__(self, asset_path: str):
-        print("🔍 Starting RobustLatexOCR Initialization (Deduplicated Final Mode)...")
+        print("🔍 Starting RobustLatexOCR Initialization (Self-Healing Mode)...")
         
+        self.asset_path = asset_path
         self.weights = os.path.join(asset_path, "weights.pth")
         self.resizer = os.path.join(asset_path, "resizer.pth")
         self.tokenizer_path = os.path.join(asset_path, "tokenizer.json")
         self.raw_config_path = os.path.join(asset_path, "settings.yaml")
         self.clean_config_path = os.path.join(asset_path, "clean_settings.yaml")
         
-        # 1. 必須アセットの確認
+        # 1. トークナイザーの自己修復 (これが今回の修正の肝)
+        self.ensure_tokenizer()
+
+        # 2. 必須アセットの確認
         for p in [self.weights, self.resizer]:
             if not os.path.exists(p):
                 raise RuntimeError(f"Critical Asset Missing: {p}")
 
-        # 2. Tokenizerからnum_tokensを取得
+        # 3. Tokenizerからnum_tokensを取得
         vocab_size = 8000
-        if os.path.exists(self.tokenizer_path):
-            try:
-                with open(self.tokenizer_path, 'r', encoding='utf-8') as f:
-                    tokenizer_data = json.load(f)
-                    if 'model' in tokenizer_data and 'vocab' in tokenizer_data['model']:
-                        vocab_size = len(tokenizer_data['model']['vocab'])
-                        print(f"📊 Auto-detected vocab size: {vocab_size}")
-            except Exception:
-                pass
+        try:
+            with open(self.tokenizer_path, 'r', encoding='utf-8') as f:
+                tokenizer_data = json.load(f)
+                if 'model' in tokenizer_data and 'vocab' in tokenizer_data['model']:
+                    vocab_size = len(tokenizer_data['model']['vocab'])
+                    print(f"📊 Vocab size loaded: {vocab_size}")
+        except Exception as e:
+            print(f"⚠️ Warning: Could not read vocab size ({e}). Using default: {vocab_size}")
 
-        # 3. 【修正点】パラメータ定義（重複排除）
+        # 4. パラメータ定義
         full_defaults = {
-            # --- トップレベルパラメータ（ここで値を決定） ---
             'num_tokens': vocab_size,
             'max_seq_len': 512,
             'dim': 256,
             'encoder_structure': 'hybrid',
             'decoder_structure': 'transformer',
-            
             'backbone_layers': [2, 3, 7],
             'encoder_depth': 4,
             'channels': 1,
             'patch_size': 16,
-            
             'num_layers': 4,
             'heads': 8,
             'ff_dim': 1024,
             'dropout': 0.1,
             'emb_dropout': 0.1,
-            
-            # --- 【重要】decoder_args を空にする ---
-            # pix2texはトップレベルの dim や heads を引数として Decoder に渡します。
-            # ここに同じキー（dim等）を入れると「二重渡し」でクラッシュします。
-            # 独自の設定が必要な場合以外は空にしておくのが正解です。
             'decoder_args': {
-                # 'dim': 256,      <-- 削除 (トップレベルと重複するため)
-                # 'num_layers': 4, <-- 削除
-                # 'heads': 8,      <-- 削除
-                # 'ff_dim': 1024,  <-- 削除
-                'attn_on_attn': True, # 必要であれば固有のパラメータのみ残す
+                'attn_on_attn': True,
                 'cross_attend': True,
                 'ff_glu': True,
                 'rel_pos_bias': False,
                 'use_scalenorm': False,
             },
-            
-            # --- 画像サイズ ---
             'max_height': 192,
             'max_width': 672,
             'min_height': 32,
             'min_width': 32,
-            
-            # --- トークンID ---
             'pad_token': 0,
             'bos_token': 1,
             'eos_token': 2,
             'unk_token': 3,
-            
-            # --- その他 ---
             'temperature': 0.2,
             'batchsize': 10,
             'micro_batchsize': -1,
@@ -98,7 +84,6 @@ class RobustLatexOCR:
             'val_freq': 1,
             'log_freq': 100,
             'workers': 1,
-            
             'checkpoint': self.weights,
             'tokenizer': self.tokenizer_path,
             'id': None,
@@ -108,17 +93,16 @@ class RobustLatexOCR:
             'config': self.clean_config_path,
         }
 
-        # 4. ユーザー設定のロード (参考程度)
+        # 5. ユーザー設定のロード (参考程度)
         user_config = {}
         try:
             if os.path.exists(self.raw_config_path):
                 with open(self.raw_config_path, 'r', encoding='utf-8') as f:
                     user_config = yaml.safe_load(f) or {}
-                    print("📂 User config loaded for reference.")
         except Exception:
             pass
 
-        # 5. 安全なマージ
+        # 6. 安全なマージ
         for k, v in user_config.items():
             if k == 'max_dimensions' and isinstance(v, list):
                 full_defaults['max_height'] = int(v[0])
@@ -128,27 +112,22 @@ class RobustLatexOCR:
                 full_defaults['min_width'] = int(v[1])
             elif k in full_defaults and isinstance(v, (int, float, str, bool)):
                 full_defaults[k] = v
-            # decoder_argsのマージは慎重に行う（重複キーは入れない）
             elif k == 'decoder_args' and isinstance(v, dict):
                 for dk, dv in v.items():
-                    # dim, heads, num_layers などはトップレベルで制御するため除外
                     if dk not in ['dim', 'heads', 'num_layers', 'ff_dim', 'num_tokens']:
                         full_defaults['decoder_args'][dk] = dv
 
-        # 6. クリーンな設定ファイルの保存
+        # 7. クリーンな設定ファイルの保存
         try:
             with open(self.clean_config_path, 'w', encoding='utf-8') as f:
                 yaml.dump(full_defaults, f)
-            print(f"🔧 Generated robust config at: {self.clean_config_path}")
         except Exception as e:
             raise RuntimeError(f"Failed to write clean config: {e}")
         
-        # 7. Namespace生成
+        # 8. Namespace生成
         args = Namespace(**full_defaults)
         
-        print(f"🚀 Initializing LatexOCR with:")
-        print(f"   - dim: {args.dim}")
-        print(f"   - decoder_args keys: {list(args.decoder_args.keys())}") # 重複がないか確認
+        print(f"🚀 Initializing LatexOCR...")
         
         try:
             self.engine = LatexOCR(args)
@@ -159,6 +138,48 @@ class RobustLatexOCR:
             import traceback
             traceback.print_exc()
             raise RuntimeError(f"Model Init Failed: {e}")
+
+    def ensure_tokenizer(self):
+        """
+        トークナイザーファイルが壊れている(LFSポインタ)か、存在しない場合に
+        公式リポジトリから強制的にダウンロードして上書き修復する。
+        """
+        url = "https://github.com/lukas-blecher/LaTeX-OCR/raw/main/pix2tex/model/dataset/tokenizer.json"
+        
+        needs_download = False
+        
+        if not os.path.exists(self.tokenizer_path):
+            print("⚠️ Tokenizer not found. Preparing download...")
+            needs_download = True
+        else:
+            # ファイルはあるが、中身がLFSポインタ(テキスト)かチェック
+            try:
+                with open(self.tokenizer_path, 'r', encoding='utf-8') as f:
+                    content = f.read(100) # 先頭だけ読む
+                    if "version https://git-lfs" in content:
+                        print("⚠️ Tokenizer is an LFS pointer. Preparing download...")
+                        needs_download = True
+                    else:
+                        # JSONとして正当かチェック
+                        f.seek(0)
+                        json.load(f)
+            except json.JSONDecodeError:
+                print("⚠️ Tokenizer JSON is corrupted. Preparing download...")
+                needs_download = True
+            except Exception:
+                needs_download = True
+
+        if needs_download:
+            print(f"⬇️ Downloading tokenizer from {url}...")
+            try:
+                response = requests.get(url, timeout=10)
+                response.raise_for_status()
+                with open(self.tokenizer_path, 'w', encoding='utf-8') as f:
+                    f.write(response.text)
+                print("✅ Tokenizer downloaded and repaired.")
+            except Exception as e:
+                # ダウンロードも失敗したら打つ手なしだが、エラーログは出す
+                raise RuntimeError(f"Failed to download tokenizer: {e}")
 
     def predict(self, image):
         try:
