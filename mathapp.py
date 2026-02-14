@@ -1,57 +1,43 @@
 import streamlit as st
 import os
 import io
-import base64
+import re
 from PIL import Image
 from docx import Document
 from docx.shared import Inches
 from src.loader import RobustLatexOCR
 
-# --- 1. 物理・数学 専門辞書 ---
-MATH_PHYSICS_DICT = {
-    "\\times 10 ^ {": " \\times 10^{",
-    "cm ^ { 2 }": "\\text{cm}^2",
-    "m / s ^ { 2 }": "\\text{m/s}^2",
-    "p h i": "\\phi",
-    "t h e t a": "\\theta",
-    "o m e g a": "\\omega",
-    "h b a r": "\\hbar",
-    "i n f t y": "\\infty",
-    "p i": "\\pi",
-}
+# --- 1. 定数・辞書設定 ---
+GREEK_LETTERS = [
+    "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", 
+    "iota", "kappa", "lambda", "mu", "nu", "xi", "omicron", "pi", "rho", 
+    "sigma", "tau", "upsilon", "phi", "chi", "psi", "omega",
+    "Gamma", "Delta", "Theta", "Lambda", "Xi", "Pi", "Sigma", "Upsilon", "Phi", "Psi", "Omega"
+]
 
-def refine_latex(text):
-    text = text.replace("$", "").strip()
-    for raw, refined in MATH_PHYSICS_DICT.items():
-        text = text.replace(raw, refined)
-    return text
+# --- 2. 便利関数 ---
+def extract_non_keyboard_chars(text):
+    """LaTeXからギリシャ文字などの特殊記号を抽出する"""
+    # \alpha などのパターンを抽出
+    found = re.findall(r'\\([a-zA-Z]+)', text)
+    return [f"\\{f}" for f in found if f in GREEK_LETTERS]
 
-# --- 2. Word出力機能 ---
 def create_docx(latex_code, image):
     doc = Document()
     doc.add_heading('MathOCR Analysis Report', 0)
     doc.add_paragraph('解析された数式:')
     doc.add_paragraph(latex_code)
-    
     img_byte_arr = io.BytesIO()
     image.save(img_byte_arr, format='PNG')
     doc.add_picture(img_byte_arr, width=Inches(4))
-    
     target_stream = io.BytesIO()
     doc.save(target_stream)
     return target_stream.getvalue()
 
 # --- 3. ページ設定 ---
 st.set_page_config(page_title="MathOCR Specialist", layout="wide", page_icon="🎯")
-
-st.markdown("""
-    <style>
-    .stButton>button { width: 100%; border-radius: 5px; height: 3em; background-color: #007bff; color: white; }
-    </style>
-    """, unsafe_allow_html=True)
-
 st.title("🎯 MathOCR Specialist")
-st.caption("物理・数学研究のための高精度ツール")
+st.caption("数学・物理特化型：ハイブリッド修正システム搭載 (Streamlit 1.29.0 安定版)")
 
 # --- 4. エンジンロード ---
 @st.cache_resource
@@ -73,49 +59,71 @@ if uploaded_file:
     
     with col1:
         st.subheader("📏 解析範囲の指定")
-        # 安定性を重視し、スライダー方式を採用。これで「真っ白」を100%回避します。
-        x_range = st.slider("横の範囲", 0, w, (int(w*0.1), int(w*0.9)))
-        y_range = st.slider("縦の範囲", 0, h, (int(h*0.3), int(h*0.7)))
+        # 地雷回避1: st_canvasを使わず、スライダーで安全に範囲指定
+        x_range = st.slider("横の範囲", 0, w, (0, w))
+        y_range = st.slider("縦の範囲", 0, h, (0, h))
         
-        # 安全なクロップ処理
-        l, r = x_range
-        t, b = y_range
-        if r <= l: r = l + 1
-        if b <= t: b = t + 1
+        crop = img.crop((x_range[0], y_range[0], x_range[1], y_range[1]))
+        # 地雷回避2: use_column_width=True を使用
+        st.image(crop, caption="解析対象", use_column_width=True)
         
-        crop = img.crop((l, t, r, b))
-        # 1.29.0互換の引数を使用
-        st.image(crop, caption="ターゲット範囲", use_column_width=True)
+        analyze_btn = st.button("🚀 数式を解析する")
 
     with col2:
-        st.subheader("🚀 解析結果")
+        st.subheader("📝 解析・修正エリア")
         
-        if st.button("数式を解析する"):
-            with st.spinner("専門アルゴリズム適用中..."):
+        # セッション状態で結果を保持
+        if "latex_res" not in st.session_state:
+            st.session_state.latex_res = ""
+
+        if analyze_btn:
+            with st.spinner("AIが数式を読み取り中..."):
                 try:
-                    raw_res = ocr.predict(crop)
-                    refined_res = refine_latex(raw_res)
-                    
-                    st.success("解析完了！")
-                    st.divider()
-                    
-                    # プレビュー表示
-                    st.markdown("##### プレビュー")
-                    st.latex(refined_res)
-                    
-                    # コード表示
-                    st.markdown("##### LaTeXコード")
-                    st.code(refined_res, language="latex")
-                    
-                    # Wordダウンロードボタン
-                    docx_data = create_docx(refined_res, crop)
-                    st.download_button(
-                        label="📄 Word形式で保存 (.docx)",
-                        data=docx_data,
-                        file_name="math_analysis.docx",
-                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                    )
+                    res = ocr.predict(crop)
+                    st.session_state.latex_res = res.replace("$", "").strip()
                 except Exception as e:
-                    st.error(f"解析エラー: {e}")
+                    st.error(f"エラー: {e}")
+
+        if st.session_state.latex_res:
+            # --- 修正システム：ここが「あの頃の機能」 ---
+            current_latex = st.session_state.latex_res
+            st.info("解析結果を修正できます")
+            
+            # ルート1: キーボード文字修正
+            st.markdown("**【ルート1】キーボード文字・数字の修正**")
+            c1, c2 = st.columns([1, 3])
+            idx_to_edit = c1.number_input("何文字目？", 1, len(current_latex) if current_latex else 1, 1)
+            new_char = c2.text_input("新しい文字を入力", value=current_latex[idx_to_edit-1] if current_latex else "")
+            
+            if st.button("ルート1：適用"):
+                l_list = list(current_latex)
+                l_list[idx_to_edit-1] = new_char
+                st.session_state.latex_res = "".join(l_list)
+                st.rerun()
+
+            st.divider()
+
+            # ルート2: ギリシャ文字修正ボタン
+            st.markdown("**【ルート2】ギリシャ文字の修正・追加**")
+            found_greeks = extract_non_keyboard_chars(current_latex)
+            if found_greeks:
+                st.write("検出された特殊記号（クリックで一括置換・修正）:")
+                g_cols = st.columns(len(found_greeks))
+                for i, g in enumerate(found_greeks):
+                    if g_cols[i].button(g):
+                        # ここに特定の修正ロジックを入れることも可能
+                        st.toast(f"{g} が選択されました。必要に応じてルート1で修正してください。")
+
+            # 最終結果表示
+            st.success("現在のLaTeX結果:")
+            st.latex(st.session_state.latex_res)
+            st.code(st.session_state.latex_res, language="latex")
+
+            # Word出力
+            docx_data = create_docx(st.session_state.latex_res, crop)
+            st.download_button(
+                "📄 Wordで保存", docx_data, "math_result.docx", 
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            )
 else:
-    st.info("左側のサイドバーから画像をアップロードしてください。")
+    st.info("サイドバーから画像をアップロードしてください。")
