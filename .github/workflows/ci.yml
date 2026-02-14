@@ -1,0 +1,72 @@
+name: MathOCR Integrity Check
+
+on:
+  push:
+    branches: [ "main", "develop" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        lfs: true  # Git LFSファイルをフェッチする設定
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.11"
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        # 依存関係のインストール（軽量化のためtorchはCPU版を指定も可だが、requirementsに従う）
+        pip install -r requirements.txt
+        # テスト用ライブラリ
+        pip install pytest
+
+    - name: Verify Asset Integrity
+      run: |
+        # 重みファイルや設定ファイルが存在するか、サイズが0でないか確認
+        if [ ! -s assets/weights.pth ]; then
+          echo "Error: assets/weights.pth is missing or empty."
+          exit 1
+        fi
+        if [ ! -s assets/settings.yaml ]; then
+          echo "Error: assets/settings.yaml is missing or empty."
+          exit 1
+        fi
+        echo "✅ Asset Integrity Check Passed"
+
+    - name: Run Model Initialization Test (Dry Run)
+      # GPUなし環境でも実行可能なテストスクリプトを作成・実行
+      run: |
+        python -c "
+        import sys
+        import os
+        from src.loader import RobustLatexOCR
+        
+        try:
+            print('🚀 Starting Dry-Run Initialization...')
+            # アセットパスを指定
+            asset_dir = os.path.join(os.getcwd(), 'assets')
+            
+            # モデルローダーの初期化テスト
+            # ここで TypeError が出ればCIは落ちる
+            loader = RobustLatexOCR(asset_dir)
+            
+            print('✅ Model initialized successfully!')
+            
+            # Configの中身検証
+            if isinstance(loader.config.max_dimensions, list):
+                print('✅ Config validation passed: max_dimensions is list')
+            else:
+                sys.exit('❌ Config validation failed')
+                
+        except Exception as e:
+            print(f'❌ Test Failed: {e}')
+            sys.exit(1)
+        "
