@@ -4,109 +4,85 @@ from PIL import Image
 from streamlit_drawable_canvas import st_canvas
 from src.loader import RobustLatexOCR
 
-# --- ページ設定 ---
-st.set_page_config(page_title="MathOCR Specialist", layout="centered")
+# --- ページ設定 (ワイドモードを有効化し、左右の余白を減らす) ---
+st.set_page_config(page_title="MathOCR Specialist", layout="wide")
 
-# --- CSSで見た目を調整 ---
-st.markdown("""
-<style>
-    .block-container {
-        padding-top: 2rem;
-        padding-bottom: 2rem;
-    }
-    h1 {
-        text-align: center;
-        color: #333;
-    }
-</style>
-""", unsafe_allow_html=True)
+st.title("🎯 MathOCR ROI Specialist")
 
-st.title("MathOCR ROI Specialist")
-st.markdown("画像をアップロードし、**数式部分をマウスで囲って**ください。")
-
-# --- AIエンジンのロード（キャッシュ化） ---
+# --- AIエンジンのロード ---
 @st.cache_resource
 def load_engine():
-    # パスを絶対パスで解決
     base_dir = os.path.dirname(os.path.abspath(__file__))
     asset_dir = os.path.join(base_dir, "assets")
     return RobustLatexOCR(asset_dir)
 
 try:
     ocr_engine = load_engine()
-    st.success("✅ AI Engine Loaded Successfully")
 except Exception as e:
-    st.error(f"🚨 Engine Initialization Failed: {e}")
+    st.error(f"🚨 Engine Error: {e}")
     st.stop()
 
-# --- 画像アップロード ---
-uploaded_file = st.file_uploader("Upload Image", type=["jpg", "png", "jpeg"])
+# --- ファイルアップロード ---
+uploaded_file = st.file_uploader("数式画像をアップロード", type=["jpg", "png", "jpeg"])
 
 if uploaded_file:
-    # 1. 画像を開く
+    # 1. 画像を読み込み
     raw_image = Image.open(uploaded_file).convert("RGB")
-    original_w, original_h = raw_image.size
+    orig_w, orig_h = raw_image.size
 
-    # 2. 表示サイズを計算 (レスポンシブ対応)
-    # キャンバスの幅を700pxに固定し、高さを比率に合わせて自動計算
-    CANVAS_WIDTH = 700
-    scale_factor = CANVAS_WIDTH / original_w
-    canvas_height = int(original_h * scale_factor)
+    # 2. 表示サイズを動的に決定 (画面からはみ出さないように)
+    # Streamlitのメインカラムの幅に合わせる（最大800px程度）
+    max_display_width = 800
     
-    # 表示用にリサイズした画像を作成
-    display_image = raw_image.resize((CANVAS_WIDTH, canvas_height))
+    if orig_w > max_display_width:
+        display_w = max_display_width
+        scale = display_w / orig_w
+        display_h = int(orig_h * scale)
+    else:
+        # 画像が小さい場合はそのままのサイズで表示
+        display_w = orig_w
+        display_h = orig_h
+        scale = 1.0
 
-    # 3. キャンバスの表示
-    # ユーザーは「縮小された画像」の上で操作する
+    st.info(f"💡 マウスで数式を囲ってください (表示サイズ: {display_w}x{display_h})")
+
+    # 3. キャンバスの構築 (画像のサイズをそのまま反映)
+    # ここで height/width を display_h/display_w に連動させるのが肝です
     canvas_result = st_canvas(
-        fill_color="rgba(255, 165, 0, 0.3)",  # 選択範囲の色
+        fill_color="rgba(255, 165, 0, 0.3)",
         stroke_width=2,
         stroke_color="#FF4B4B",
-        background_image=display_image,
+        background_image=raw_image.resize((display_w, display_h)),
         update_streamlit=True,
-        height=canvas_height,
-        width=CANVAS_WIDTH,
-        drawing_mode="rect",  # 四角形選択モード
-        key="canvas",
+        height=display_h,   # 画像の高さに自動調節
+        width=display_w,    # 画像の幅に自動調節
+        drawing_mode="rect",
+        key="math_canvas_v3",
     )
 
-    # 4. 解析実行ボタン
-    if st.button("🚀 Convert to LaTeX"):
-        # 選択範囲があるかチェック
-        if canvas_result.json_data is not None:
-            objects = canvas_result.json_data["objects"]
+    # 4. 解析実行
+    if st.button("🚀 LaTeXに変換"):
+        if canvas_result.json_data and len(canvas_result.json_data["objects"]) > 0:
+            obj = canvas_result.json_data["objects"][-1]
             
-            if len(objects) > 0:
-                # 最新のボックスを取得
-                obj = objects[-1]
-                
-                # 5. 座標の逆変換 (重要！)
-                # 表示画面(700px)での座標を、元の高画質画像の座標に戻す
-                left = int(obj["left"] / scale_factor)
-                top = int(obj["top"] / scale_factor)
-                width = int(obj["width"] / scale_factor)
-                height = int(obj["height"] / scale_factor)
-                
-                # クロップ（元画像から切り抜き）
-                cropped_img = raw_image.crop((left, top, left + width, top + height))
-                
-                # 確認用に切り抜いた画像を表示（サイドバーなど）
-                with st.expander("Processing Crop..."):
-                    st.image(cropped_img, caption="AI Input High-Res Crop")
-
-                # AI推論実行
-                with st.spinner("Analyzing math formula..."):
-                    try:
-                        latex_code = ocr_engine.predict(cropped_img)
-                        
-                        st.divider()
-                        st.subheader("Result")
-                        # LaTeXとしてレンダリング
-                        st.latex(latex_code.replace("$", ""))
-                        # コピー用コードブロック
-                        st.code(latex_code, language="latex")
-                        
-                    except Exception as e:
-                        st.error(f"Prediction Error: {e}")
-            else:
-                st.warning("⚠️ Please draw a box around the formula first.")
+            # 座標を元画像のスケールに復元
+            left = int(obj["left"] / scale)
+            top = int(obj["top"] / scale)
+            w = int(obj["width"] / scale)
+            h = int(obj["height"] / scale)
+            
+            # クロップ
+            cropped_img = raw_image.crop((left, top, left + w, top + h))
+            
+            # 結果表示
+            with st.spinner("解析中..."):
+                try:
+                    latex_res = ocr_engine.predict(cropped_img)
+                    st.divider()
+                    st.subheader("抽出結果")
+                    st.latex(latex_res.replace("$", ""))
+                    st.code(latex_res, language="latex")
+                except Exception as e:
+                    st.error(f"解析失敗: {e}")
+        else:
+            st.warning("⚠️ 範囲を選択してください")
