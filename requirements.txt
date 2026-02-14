@@ -1,0 +1,9 @@
+streamlit
+streamlit-drawable-canvas
+Pillow
+python-docx
+requests
+PyYAML
+pix2tex[gui]
+torch
+torchvision
