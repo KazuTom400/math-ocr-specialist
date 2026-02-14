@@ -8,30 +8,23 @@ from docx import Document
 from streamlit_drawable_canvas import st_canvas
 from src.loader import RobustLatexOCR
 
-# --- 1. 物理・数学 専門パレット (復元) ---
-GREEK_LETTERS = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "lambda", "mu", "pi", "rho", "sigma", "tau", "phi", "omega", "Delta", "Omega"]
-KEYBOARD_CHARS = ["+", "-", "=", "(", ")", "[", "]", "{", "}", "^", "_", "/", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
-
-def get_image_base64(img):
+# --- 1. 画像をブラウザが直接読める形式(Base64)に変換する関数 ---
+def get_image_base64_string(img):
     buffered = io.BytesIO()
     img.save(buffered, format="PNG")
-    return base64.b64encode(buffered.getvalue()).decode()
+    img_str = base64.b64encode(buffered.getvalue()).decode()
+    return f"data:image/png;base64,{img_str}"
 
-# --- 2. ページ設定 (画像表示エリアを最大化) ---
+# --- 2. 専門パレットの設定 (復元) ---
+GREEK_LETTERS = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "lambda", "mu", "pi", "rho", "sigma", "tau", "phi", "omega"]
+SPECIAL_SYMBOLS = ["\\infty", "\\partial", "\\nabla", "\\hbar", "\\forall", "\\exists", "\\pm", "\\mp", "\\times", "\\div", "\\neq", "\\approx", "\\leq", "\\geq"]
+KEYBOARD_CHARS = ["+", "-", "=", "(", ")", "^", "_", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
+
+# --- 3. ページ設定 ---
 st.set_page_config(page_title="MathOCR Specialist", layout="wide", page_icon="🎯")
-
-# カスタムCSSでボタンと表示をプロ仕様に
-st.markdown("""
-    <style>
-    .stButton>button { width: 100%; border-radius: 4px; border: 1px solid #ddd; }
-    .greek-btn { background-color: #e3f2fd; }
-    .kb-btn { background-color: #f5f5f5; }
-    </style>
-    """, unsafe_allow_html=True)
-
 st.title("🎯 MathOCR Specialist")
 
-# --- 3. AIエンジンのロード ---
+# --- 4. AIエンジンのロード ---
 @st.cache_resource
 def load_engine():
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -40,100 +33,102 @@ def load_engine():
 
 ocr = load_engine()
 
-# --- 4. メイン UI 構成 ---
+# --- 5. メイン UI 構成 ---
 if "latex_res" not in st.session_state:
     st.session_state.latex_res = ""
 
-uploaded_file = st.sidebar.file_uploader("📷 画像をアップロード", type=["jpg", "png", "jpeg"])
+uploaded_file = st.sidebar.file_uploader("📷 数式の画像をアップロード", type=["jpg", "png", "jpeg"])
 
 if uploaded_file:
-    # 画像処理
     img_raw = Image.open(uploaded_file).convert("RGB")
     
-    # 画面の左右比率を「6:4」にして画像表示を優先
+    # 画像表示エリアを大きく確保
     col_img, col_ctrl = st.columns([6, 4])
     
     with col_img:
-        st.subheader("📏 数式を囲む（画像優先表示）")
+        st.subheader("📏 解析範囲をマウスで囲んでください")
         
-        # キャンバス表示の安定化ロジック
-        CANVAS_WIDTH = 800 # より大きく表示
+        # キャンバスサイズと表示用Base64の作成
+        CANVAS_WIDTH = 800
         scale = CANVAS_WIDTH / img_raw.width
         canvas_height = int(img_raw.height * scale)
-        img_disp = img_raw.resize((CANVAS_WIDTH, canvas_height))
         
-        # 描画キャンバス (マウス操作)
+        # 【重要】Base64文字列に変換。これが「真っ白」を直す特効薬です。
+        b64_img = get_image_base64_string(img_raw)
+        
+        # 描画キャンバス
         canvas_result = st_canvas(
             fill_color="rgba(255, 165, 0, 0.3)",
             stroke_width=2,
             stroke_color="#e67e22",
-            background_image=img_disp,
+            background_image=Image.open(uploaded_file), # 予備でPILも
+            background_color="#ffffff",
             update_streamlit=True,
             height=canvas_height,
             width=CANVAS_WIDTH,
             drawing_mode="rect",
-            key="canvas",
+            key="canvas_main",
         )
 
     with col_ctrl:
-        st.subheader("🚀 解析 & 修正パレット")
+        st.subheader("📝 修正パレット & 出力")
         
-        # 1. 解析実行エリア
+        # 解析処理
         if canvas_result.json_data is not None:
             objects = canvas_result.json_data["objects"]
             if len(objects) > 0:
                 obj = objects[-1]
-                # 正確な座標計算
                 left, top = int(obj["left"]/scale), int(obj["top"]/scale)
                 w, h = int(obj["width"]/scale), int(obj["height"]/scale)
                 crop = img_raw.crop((left, top, left + w, top + h))
                 
-                # 切り取った部分を大きくプレビュー
-                st.image(crop, caption="ターゲット", use_column_width=True)
+                st.image(crop, caption="現在選択されている数式", use_column_width=True)
                 
-                if st.button("✨ 数式を解析する"):
-                    with st.spinner("AI解析中..."):
+                if st.button("✨ 数式を解析実行"):
+                    with st.spinner("AIが数式を変換中..."):
                         res = ocr.predict(crop)
                         st.session_state.latex_res = res.replace("$", "").strip()
 
-        # 2. 【あの頃の機能】ハイブリッド修正パレット (復活)
+        # --- 【あの頃の機能】プロフェッショナル修正パレット ---
         if st.session_state.latex_res:
             st.divider()
-            st.markdown("### 📝 ハイブリッド修正")
             
-            # テキストエリアでの直接編集
-            st.session_state.latex_res = st.text_input("LaTeXコード直接編集", value=st.session_state.latex_res)
+            # 1. ライブ編集テキストエリア
+            st.session_state.latex_res = st.text_input("LaTeX編集 (ここを直接書き換えてもOK)", value=st.session_state.latex_res)
 
-            # --- カテゴリ別修正パレット ---
-            tab_greek, tab_kb = st.tabs(["🌿 ギリシャ文字", "⌨️ キーボード/数字"])
+            # 2. タブによる機能別パレット
+            tab1, tab2, tab3 = st.tabs(["🌿 ギリシャ文字", "⌨️ 数字・演算子", "✨ 特殊記号"])
             
-            with tab_greek:
-                st.write("クリックで末尾に追加:")
+            with tab1:
                 g_cols = st.columns(6)
                 for i, g in enumerate(GREEK_LETTERS):
                     if g_cols[i % 6].button(f"\\{g}", key=f"g_{g}"):
                         st.session_state.latex_res += f" \\{g}"
                         st.rerun()
 
-            with tab_kb:
-                st.write("クリックで末尾に追加:")
+            with tab2:
                 k_cols = st.columns(7)
                 for i, k in enumerate(KEYBOARD_CHARS):
                     if k_cols[i % 7].button(k, key=f"k_{k}"):
                         st.session_state.latex_res += k
                         st.rerun()
+            
+            with tab3:
+                s_cols = st.columns(5)
+                for i, s in enumerate(SPECIAL_SYMBOLS):
+                    if s_cols[i % 5].button(s, key=f"s_{s}"):
+                        st.session_state.latex_res += f" {s}"
+                        st.rerun()
 
-            # --- 最終レンダリング結果 ---
-            st.info("最終レンダリング")
+            # --- 最終プレビュー ---
+            st.info("最終レンダリング結果")
             st.latex(st.session_state.latex_res)
             
-            # Word保存
-            if st.button("📄 Wordに書き出す"):
+            if st.button("📄 Wordにエクスポート"):
                 doc = Document()
                 doc.add_paragraph(st.session_state.latex_res)
                 bio = io.BytesIO()
                 doc.save(bio)
-                st.download_button("ダウンロード", bio.getvalue(), "result.docx")
-
+                st.download_button("Wordファイルを保存", bio.getvalue(), "math_ocr.docx")
 else:
-    st.info("サイドバーから数式画像をアップロードしてください。")
+    st.info("サイドバーから画像をアップロードしてください。")
