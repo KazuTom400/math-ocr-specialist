@@ -1,39 +1,8 @@
 import os
 import yaml
 import torch
-from dataclasses import dataclass, field, asdict
-from typing import Dict, Any, List, Optional
 from argparse import Namespace
 from pix2tex.cli import LatexOCR
-
-@dataclass
-class ModelConfig:
-    """設定値の型定義とバリデーション"""
-    # YAML内でリストとして定義されている項目
-    backbone_layers: List[int] = field(default_factory=lambda: [2, 3, 7])
-    channels: List[int] = field(default_factory=lambda: [64, 128, 256, 512])
-    max_dimensions: List[int] = field(default_factory=lambda: [1024, 512]) # [H, W]
-    min_dimensions: List[int] = field(default_factory=lambda: [32, 32])
-    
-    # スカラ値
-    temperature: float = 0.00001
-    max_seq_len: int = 512
-    patch_size: int = 16
-    dim: int = 256
-    decoder_args: Dict[str, Any] = field(default_factory=lambda: {
-        'max_seq_len': 512, 'dim': 256, 'num_layers': 4, 'heads': 8
-    })
-
-    @classmethod
-    def from_yaml(cls, path: str):
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"Config file not found: {path}")
-        with open(path, 'r', encoding='utf-8') as f:
-            data = yaml.safe_load(f)
-        
-        # クラス定義にあるキーのみを抽出してマッピング
-        valid_args = {k: v for k, v in data.items() if k in cls.__annotations__}
-        return cls(**valid_args)
 
 class RobustLatexOCR:
     def __init__(self, asset_path: str):
@@ -41,58 +10,71 @@ class RobustLatexOCR:
         self.resizer = os.path.join(asset_path, "resizer.pth")
         self.config_path = os.path.join(asset_path, "settings.yaml")
         
-        # 1. 資産のイミュータブル確認
+        # 1. 資産の整合性チェック
         for p in [self.weights, self.resizer, self.config_path]:
             if not os.path.exists(p):
                 raise RuntimeError(f"Critical Asset Missing: {p}")
 
-        # 2. 設定のロード
-        self.config = ModelConfig.from_yaml(self.config_path)
+        # 2. YAMLを「辞書」としてロード（ここが正）
+        with open(self.config_path, 'r', encoding='utf-8') as f:
+            args_dict = yaml.safe_load(f)
 
-        # 3. 引数の完全サニタイズ（ここが決定的な修正点）
-        args_dict = asdict(self.config)
+        # 3. 汚染源の外科的除去（Surgical Removal）
+        # ライブラリが誤って使うリスト型パラメータを完全に消去
+        if 'max_dimensions' in args_dict:
+            max_dims = args_dict.pop('max_dimensions')
+        else:
+            max_dims = [1024, 512] # デフォルト
 
-        # リスト型の値を退避
-        max_dims = args_dict.pop('max_dimensions', [1024, 512]) # popして辞書から消去
-        min_dims = args_dict.pop('min_dimensions', [32, 32])    # popして辞書から消去
+        if 'min_dimensions' in args_dict:
+            min_dims = args_dict.pop('min_dimensions')
+        else:
+            min_dims = [32, 32] # デフォルト
 
-        # 安全にスカラ値を取得
+        # 4. 安全なスカラ型として再注入
+        # listかintかを判定して格納
         max_h = max_dims[0] if isinstance(max_dims, list) else max_dims
         max_w = max_dims[1] if isinstance(max_dims, list) else max_dims
         min_h = min_dims[0] if isinstance(min_dims, list) else min_dims
         min_w = min_dims[1] if isinstance(min_dims, list) else min_dims
 
-        # 辞書に必要なキーを追加・上書き
+        # 5. 辞書の上書き・統合
         args_dict.update({
             'checkpoint': self.weights,
-            'config': self.config_path,
+            # 【重要】 'config' キーはあえて渡さない！
+            # 渡すとライブラリがファイルを再読込してしまい、上記のpopが無意味になるため。
+            # 'config': self.config_path,  <-- REMOVED
+            
             'no_cuda': True,
             'no_resize': False,
             'max_height': int(max_h),
             'max_width': int(max_w),
             'min_height': int(min_h),
             'min_width': int(min_w),
-            'patch_size': int(self.config.patch_size),
+            # patch_sizeがYAMLにない場合の保険
+            'patch_size': int(args_dict.get('patch_size', 16)),
         })
 
-        # Namespaceの構築
+        # 6. Namespace化
         args = Namespace(**args_dict)
         
-        print(f"🔧 Initializing LatexOCR with Sanitized Args: max_dims=({args.max_height}, {args.max_width})")
-        # 念のための確認ログ：危険なキーが含まれていないか
-        if hasattr(args, 'max_dimensions'):
-            print("⚠️ Warning: max_dimensions still exists in args!")
-
+        print(f"🔧 Initializing LatexOCR (Bypass Mode): max_dims=({args.max_height}, {args.max_width})")
+        
         try:
+            # これでライブラリはメモリ上の args_dict だけを信じるようになる
             self.engine = LatexOCR(args)
+            
             if torch.cuda.is_available():
                 self.engine.model.cuda()
-        except TypeError as e:
-            # エラー発生時の引数ダンプ（デバッグ用）
-            raise RuntimeError(f"Initialization failed: {e}. Keys provided: {list(args_dict.keys())}")
+                
+        except Exception as e:
+            # エラーの詳細解析用
+            import traceback
+            traceback.print_exc()
+            raise RuntimeError(f"Model Init Failed: {e}")
 
     def predict(self, image):
         try:
             return f"${self.engine(image)}$"
         except Exception as e:
-            return f"\\text{{Error in processing: {str(e)}}}"
+            return f"\\text{{Error: {str(e)}}}"
