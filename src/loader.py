@@ -15,7 +15,7 @@ class ModelConfig:
     max_dimensions: List[int] = field(default_factory=lambda: [1024, 512]) # [H, W]
     min_dimensions: List[int] = field(default_factory=lambda: [32, 32])
     
-    # スカラ値（デフォルト値はYAMLがない場合のフォールバック）
+    # スカラ値
     temperature: float = 0.00001
     max_seq_len: int = 512
     patch_size: int = 16
@@ -49,48 +49,48 @@ class RobustLatexOCR:
         # 2. 設定のロード
         self.config = ModelConfig.from_yaml(self.config_path)
 
-        # 3. 引数のサニタイズ（ここが修正の肝）
-        # list型の max_dimensions を、pix2texが期待する int型の max_height/max_width に展開
-        max_height = self.config.max_dimensions[0] if isinstance(self.config.max_dimensions, list) else self.config.max_dimensions
-        max_width = self.config.max_dimensions[1] if isinstance(self.config.max_dimensions, list) else self.config.max_dimensions
-        
-        min_height = self.config.min_dimensions[0] if isinstance(self.config.min_dimensions, list) else self.config.min_dimensions
-        min_width = self.config.min_dimensions[1] if isinstance(self.config.min_dimensions, list) else self.config.min_dimensions
+        # 3. 引数のサニタイズと辞書構築
+        # まずConfigを辞書化（ベースとなる設定）
+        args_dict = asdict(self.config)
 
-        # Namespaceの構築（明示的に値を指定して上書き）
-        args = Namespace(
-            # 必須パス
-            checkpoint=self.weights,
-            config=self.config_path,
-            
-            # 動作モード
-            no_cuda=True, # 初期化時はCPUで安全に
-            no_resize=False,
-            
-            # 展開したスカラ値を明示的に渡す
-            max_height=int(max_height),
-            max_width=int(max_width),
-            min_height=int(min_height),
-            min_width=int(min_width),
-            patch_size=int(self.config.patch_size),
-            
-            # その他の設定を展開
-            **asdict(self.config)
-        )
+        # list型の max_dimensions を展開してスカラ値を取得
+        max_dims = self.config.max_dimensions
+        min_dims = self.config.min_dimensions
+        
+        # リストかスカラかを判定して安全に取得
+        max_h = max_dims[0] if isinstance(max_dims, list) else max_dims
+        max_w = max_dims[1] if isinstance(max_dims, list) else max_dims
+        min_h = min_dims[0] if isinstance(min_dims, list) else min_dims
+        min_w = min_dims[1] if isinstance(min_dims, list) else min_dims
+
+        # 辞書を更新（ここで重複キーは上書きされるためエラーにならない）
+        # pix2texが必要とするキーを明示的にセット
+        args_dict.update({
+            'checkpoint': self.weights,
+            'config': self.config_path,
+            'no_cuda': True, # 初期化時はCPUで安全に
+            'no_resize': False,
+            'max_height': int(max_h),
+            'max_width': int(max_w),
+            'min_height': int(min_h),
+            'min_width': int(min_w),
+            'patch_size': int(self.config.patch_size), # 型保証のため再設定
+        })
+
+        # Namespaceの構築（辞書をアンパックして渡す）
+        args = Namespace(**args_dict)
         
         print(f"🔧 Initializing LatexOCR with Sanitized Args: max_dims=({args.max_height}, {args.max_width})")
         
         try:
             self.engine = LatexOCR(args)
-            # モデルロード後にGPUが使えれば転送（オプション）
+            # モデルロード後にGPUが使えれば転送
             if torch.cuda.is_available():
                 self.engine.model.cuda()
         except TypeError as e:
-            # 万が一のデバッグ用詳細ログ
-            raise RuntimeError(f"Initialization failed due to type mismatch: {e}. Args: {vars(args)}")
+            raise RuntimeError(f"Initialization failed due to type mismatch: {e}. Args keys: {list(args_dict.keys())}")
 
     def predict(self, image):
-        # pix2texの仕様に合わせてPIL Imageを処理
         try:
             return f"${self.engine(image)}$"
         except Exception as e:
