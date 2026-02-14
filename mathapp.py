@@ -5,9 +5,10 @@ import re
 from PIL import Image
 from docx import Document
 from docx.shared import Inches
+from streamlit_drawable_canvas import st_canvas # これを使います！
 from src.loader import RobustLatexOCR
 
-# --- 1. 定数・辞書設定 ---
+# --- 1. ギリシャ文字・物理定数リスト ---
 GREEK_LETTERS = [
     "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", 
     "iota", "kappa", "lambda", "mu", "nu", "xi", "omicron", "pi", "rho", 
@@ -17,27 +18,13 @@ GREEK_LETTERS = [
 
 # --- 2. 便利関数 ---
 def extract_non_keyboard_chars(text):
-    """LaTeXからギリシャ文字などの特殊記号を抽出する"""
-    # \alpha などのパターンを抽出
     found = re.findall(r'\\([a-zA-Z]+)', text)
     return [f"\\{f}" for f in found if f in GREEK_LETTERS]
-
-def create_docx(latex_code, image):
-    doc = Document()
-    doc.add_heading('MathOCR Analysis Report', 0)
-    doc.add_paragraph('解析された数式:')
-    doc.add_paragraph(latex_code)
-    img_byte_arr = io.BytesIO()
-    image.save(img_byte_arr, format='PNG')
-    doc.add_picture(img_byte_arr, width=Inches(4))
-    target_stream = io.BytesIO()
-    doc.save(target_stream)
-    return target_stream.getvalue()
 
 # --- 3. ページ設定 ---
 st.set_page_config(page_title="MathOCR Specialist", layout="wide", page_icon="🎯")
 st.title("🎯 MathOCR Specialist")
-st.caption("数学・物理特化型：ハイブリッド修正システム搭載 (Streamlit 1.29.0 安定版)")
+st.caption("マウスで数式を囲んでスキャンしてください")
 
 # --- 4. エンジンロード ---
 @st.cache_resource
@@ -53,77 +40,84 @@ uploaded_file = st.sidebar.file_uploader("数式画像をアップロード", ty
 
 if uploaded_file:
     img = Image.open(uploaded_file).convert("RGB")
-    w, h = img.size
+    
+    # 描画キャンバスの横幅を固定してバグを回避
+    CANVAS_WIDTH = 700
+    scale = CANVAS_WIDTH / img.width
+    canvas_height = int(img.height * scale)
     
     col1, col2 = st.columns([1, 1])
     
     with col1:
-        st.subheader("📏 解析範囲の指定")
-        # 地雷回避1: st_canvasを使わず、スライダーで安全に範囲指定
-        x_range = st.slider("横の範囲", 0, w, (0, w))
-        y_range = st.slider("縦の範囲", 0, h, (0, h))
+        st.subheader("📝 範囲をマウスで囲む")
         
-        crop = img.crop((x_range[0], y_range[0], x_range[1], y_range[1]))
-        # 地雷回避2: use_column_width=True を使用
-        st.image(crop, caption="解析対象", use_column_width=True)
+        # 【復活！】四角で囲むキャンバス機能
+        canvas_result = st_canvas(
+            fill_color="rgba(255, 165, 0, 0.3)",  # 囲った中身の色
+            stroke_width=2,
+            stroke_color="#e67e22", # 枠線の色
+            background_image=img,
+            update_streamlit=True,
+            height=canvas_height,
+            width=CANVAS_WIDTH,
+            drawing_mode="rect", # 四角形モード
+            key="canvas",
+        )
         
-        analyze_btn = st.button("🚀 数式を解析する")
+        st.info("💡 数式をマウスでドラッグして囲んでください。")
 
     with col2:
-        st.subheader("📝 解析・修正エリア")
+        st.subheader("🚀 解析・ハイブリッド修正")
         
-        # セッション状態で結果を保持
-        if "latex_res" not in st.session_state:
-            st.session_state.latex_res = ""
+        # キャンバスからデータを取り出す
+        if canvas_result.json_data is not None:
+            objects = canvas_result.json_data["objects"]
+            if len(objects) > 0:
+                # 最後に描いた四角形を取得
+                obj = objects[-1]
+                
+                # キャンバス上の座標を元の画像サイズに変換
+                real_left = int(obj["left"] / scale)
+                real_top = int(obj["top"] / scale)
+                real_width = int(obj["width"] / scale)
+                real_height = int(obj["height"] / scale)
+                
+                # クロップ（切り抜き）
+                crop = img.crop((real_left, real_top, real_left + real_width, real_top + real_height))
+                st.image(crop, caption="ターゲット範囲", use_column_width=True)
+                
+                if st.button("この範囲を解析する"):
+                    with st.spinner("AIが数式を解析中..."):
+                        res = ocr.predict(crop)
+                        st.session_state.latex_res = res.replace("$", "").strip()
 
-        if analyze_btn:
-            with st.spinner("AIが数式を読み取り中..."):
-                try:
-                    res = ocr.predict(crop)
-                    st.session_state.latex_res = res.replace("$", "").strip()
-                except Exception as e:
-                    st.error(f"エラー: {e}")
-
-        if st.session_state.latex_res:
-            # --- 修正システム：ここが「あの頃の機能」 ---
+        # --- 修正エリア（あの頃の機能） ---
+        if "latex_res" in st.session_state and st.session_state.latex_res:
             current_latex = st.session_state.latex_res
-            st.info("解析結果を修正できます")
             
-            # ルート1: キーボード文字修正
-            st.markdown("**【ルート1】キーボード文字・数字の修正**")
+            # ルート1: 1文字修正
+            st.markdown("**【ルート1】文字・数字の修正**")
             c1, c2 = st.columns([1, 3])
-            idx_to_edit = c1.number_input("何文字目？", 1, len(current_latex) if current_latex else 1, 1)
-            new_char = c2.text_input("新しい文字を入力", value=current_latex[idx_to_edit-1] if current_latex else "")
+            idx = c1.number_input("何文字目？", 1, len(current_latex), 1)
+            new_char = c2.text_input("修正後の文字", value=current_latex[idx-1])
             
-            if st.button("ルート1：適用"):
+            if st.button("ルート1適用"):
                 l_list = list(current_latex)
-                l_list[idx_to_edit-1] = new_char
+                l_list[idx-1] = new_char
                 st.session_state.latex_res = "".join(l_list)
                 st.rerun()
 
-            st.divider()
-
-            # ルート2: ギリシャ文字修正ボタン
-            st.markdown("**【ルート2】ギリシャ文字の修正・追加**")
-            found_greeks = extract_non_keyboard_chars(current_latex)
-            if found_greeks:
-                st.write("検出された特殊記号（クリックで一括置換・修正）:")
-                g_cols = st.columns(len(found_greeks))
-                for i, g in enumerate(found_greeks):
-                    if g_cols[i].button(g):
-                        # ここに特定の修正ロジックを入れることも可能
-                        st.toast(f"{g} が選択されました。必要に応じてルート1で修正してください。")
-
-            # 最終結果表示
-            st.success("現在のLaTeX結果:")
+            # ルート2: ギリシャ文字
+            st.markdown("**【ルート2】ギリシャ文字の確認**")
+            found = extract_non_keyboard_chars(current_latex)
+            if found:
+                st.write("検出された特殊記号:")
+                st.write(", ".join(found))
+            
+            # 結果表示
+            st.success("現在の結果")
             st.latex(st.session_state.latex_res)
-            st.code(st.session_state.latex_res, language="latex")
+            st.code(st.session_state.latex_res)
 
-            # Word出力
-            docx_data = create_docx(st.session_state.latex_res, crop)
-            st.download_button(
-                "📄 Wordで保存", docx_data, "math_result.docx", 
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            )
 else:
-    st.info("サイドバーから画像をアップロードしてください。")
+    st.info("左側のサイドバーから画像をアップロードしてください。")
