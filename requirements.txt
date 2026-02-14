@@ -1,9 +1,18 @@
-streamlit
-streamlit-drawable-canvas
-Pillow
-python-docx
-requests
-PyYAML
-pix2tex[gui]
+# UI & Core
+streamlit==1.29.0
+streamlit-drawable-canvas==0.9.3
+Pillow>=9.5.0
+numpy>=1.24.0
+
+# AI Model (Pix2Tex & Dependencies)
+pix2tex
 torch
 torchvision
+transformers>=4.30.0
+tokenizers>=0.13.3
+munch
+PyYAML
+requests
+albumentations
+timm
+opencv-python-headless
