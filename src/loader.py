@@ -7,7 +7,7 @@ from pix2tex.cli import LatexOCR
 
 class RobustLatexOCR:
     def __init__(self, asset_path: str):
-        print("🔍 Starting RobustLatexOCR Initialization (Corrected Final Mode)...")
+        print("🔍 Starting RobustLatexOCR Initialization (Deduplicated Final Mode)...")
         
         self.weights = os.path.join(asset_path, "weights.pth")
         self.resizer = os.path.join(asset_path, "resizer.pth")
@@ -20,56 +20,55 @@ class RobustLatexOCR:
             if not os.path.exists(p):
                 raise RuntimeError(f"Critical Asset Missing: {p}")
 
-        # 2. Tokenizerからnum_tokens（語彙数）を自動取得
-        # これがないとデコーダーの初期化で死にます
-        vocab_size = 8000 # 万が一のためのデフォルト値
+        # 2. Tokenizerからnum_tokensを取得
+        vocab_size = 8000
         if os.path.exists(self.tokenizer_path):
             try:
                 with open(self.tokenizer_path, 'r', encoding='utf-8') as f:
                     tokenizer_data = json.load(f)
-                    # tokenizer.jsonの構造に合わせてvocabサイズを取得
                     if 'model' in tokenizer_data and 'vocab' in tokenizer_data['model']:
                         vocab_size = len(tokenizer_data['model']['vocab'])
-                        print(f"📊 Auto-detected vocab size (num_tokens): {vocab_size}")
-            except Exception as e:
-                print(f"⚠️ Failed to read tokenizer.json: {e}. Using default: {vocab_size}")
-        else:
-             print(f"⚠️ Tokenizer not found at {self.tokenizer_path}. Using default vocab size: {vocab_size}")
+                        print(f"📊 Auto-detected vocab size: {vocab_size}")
+            except Exception:
+                pass
 
-        # 3. 【真の完全網羅】全パラメータ定義
+        # 3. 【修正点】パラメータ定義（重複排除）
         full_defaults = {
-            # --- 必須モデル構造 ---
-            'num_tokens': vocab_size, # 【今回追加】これが欠けていました
+            # --- トップレベルパラメータ（ここで値を決定） ---
+            'num_tokens': vocab_size,
             'max_seq_len': 512,
             'dim': 256,
             'encoder_structure': 'hybrid',
             'decoder_structure': 'transformer',
             
-            # --- エンコーダー ---
             'backbone_layers': [2, 3, 7],
             'encoder_depth': 4,
             'channels': 1,
             'patch_size': 16,
             
-            # --- デコーダー ---
             'num_layers': 4,
             'heads': 8,
             'ff_dim': 1024,
             'dropout': 0.1,
             'emb_dropout': 0.1,
             
-            # --- decoder_args (ネスト用: pix2texの実装によってはここを見る) ---
+            # --- 【重要】decoder_args を空にする ---
+            # pix2texはトップレベルの dim や heads を引数として Decoder に渡します。
+            # ここに同じキー（dim等）を入れると「二重渡し」でクラッシュします。
+            # 独自の設定が必要な場合以外は空にしておくのが正解です。
             'decoder_args': {
-                'max_seq_len': 512,
-                'dim': 256,
-                'num_layers': 4,
-                'heads': 8,
-                'dropout': 0.1,
-                'num_tokens': vocab_size, # ここにも念のため
-                'ff_dim': 1024,
+                # 'dim': 256,      <-- 削除 (トップレベルと重複するため)
+                # 'num_layers': 4, <-- 削除
+                # 'heads': 8,      <-- 削除
+                # 'ff_dim': 1024,  <-- 削除
+                'attn_on_attn': True, # 必要であれば固有のパラメータのみ残す
+                'cross_attend': True,
+                'ff_glu': True,
+                'rel_pos_bias': False,
+                'use_scalenorm': False,
             },
             
-            # --- 画像サイズ (int保証) ---
+            # --- 画像サイズ ---
             'max_height': 192,
             'max_width': 672,
             'min_height': 32,
@@ -81,7 +80,7 @@ class RobustLatexOCR:
             'eos_token': 2,
             'unk_token': 3,
             
-            # --- 学習・システム設定 ---
+            # --- その他 ---
             'temperature': 0.2,
             'batchsize': 10,
             'micro_batchsize': -1,
@@ -100,7 +99,6 @@ class RobustLatexOCR:
             'log_freq': 100,
             'workers': 1,
             
-            # --- システム設定 ---
             'checkpoint': self.weights,
             'tokenizer': self.tokenizer_path,
             'id': None,
@@ -122,19 +120,20 @@ class RobustLatexOCR:
 
         # 5. 安全なマージ
         for k, v in user_config.items():
-            # リスト型の寸法指定は展開して取り込む
             if k == 'max_dimensions' and isinstance(v, list):
                 full_defaults['max_height'] = int(v[0])
                 full_defaults['max_width'] = int(v[1])
             elif k == 'min_dimensions' and isinstance(v, list):
                 full_defaults['min_height'] = int(v[0])
                 full_defaults['min_width'] = int(v[1])
-            # 基本型のみ取り込む
             elif k in full_defaults and isinstance(v, (int, float, str, bool)):
                 full_defaults[k] = v
-            # decoder_argsのマージ
+            # decoder_argsのマージは慎重に行う（重複キーは入れない）
             elif k == 'decoder_args' and isinstance(v, dict):
-                full_defaults['decoder_args'].update(v)
+                for dk, dv in v.items():
+                    # dim, heads, num_layers などはトップレベルで制御するため除外
+                    if dk not in ['dim', 'heads', 'num_layers', 'ff_dim', 'num_tokens']:
+                        full_defaults['decoder_args'][dk] = dv
 
         # 6. クリーンな設定ファイルの保存
         try:
@@ -148,9 +147,8 @@ class RobustLatexOCR:
         args = Namespace(**full_defaults)
         
         print(f"🚀 Initializing LatexOCR with:")
-        print(f"   - num_tokens: {args.num_tokens}") # 確認用ログ
-        print(f"   - encoder_depth: {args.encoder_depth}")
         print(f"   - dim: {args.dim}")
+        print(f"   - decoder_args keys: {list(args.decoder_args.keys())}") # 重複がないか確認
         
         try:
             self.engine = LatexOCR(args)
