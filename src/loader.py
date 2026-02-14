@@ -1,15 +1,17 @@
 import os
 import yaml
 import torch
+import json
 from argparse import Namespace
 from pix2tex.cli import LatexOCR
 
 class RobustLatexOCR:
     def __init__(self, asset_path: str):
-        print("🔍 Starting RobustLatexOCR Initialization (Final Safe Mode)...")
+        print("🔍 Starting RobustLatexOCR Initialization (Corrected Final Mode)...")
         
         self.weights = os.path.join(asset_path, "weights.pth")
         self.resizer = os.path.join(asset_path, "resizer.pth")
+        self.tokenizer_path = os.path.join(asset_path, "tokenizer.json")
         self.raw_config_path = os.path.join(asset_path, "settings.yaml")
         self.clean_config_path = os.path.join(asset_path, "clean_settings.yaml")
         
@@ -18,29 +20,53 @@ class RobustLatexOCR:
             if not os.path.exists(p):
                 raise RuntimeError(f"Critical Asset Missing: {p}")
 
-        # 2. 【過剰防衛】全パラメータ網羅型デフォルト設定
-        # pix2texの全バージョンに対応できるよう、エイリアス含めて全て定義する
+        # 2. Tokenizerからnum_tokens（語彙数）を自動取得
+        # これがないとデコーダーの初期化で死にます
+        vocab_size = 8000 # 万が一のためのデフォルト値
+        if os.path.exists(self.tokenizer_path):
+            try:
+                with open(self.tokenizer_path, 'r', encoding='utf-8') as f:
+                    tokenizer_data = json.load(f)
+                    # tokenizer.jsonの構造に合わせてvocabサイズを取得
+                    if 'model' in tokenizer_data and 'vocab' in tokenizer_data['model']:
+                        vocab_size = len(tokenizer_data['model']['vocab'])
+                        print(f"📊 Auto-detected vocab size (num_tokens): {vocab_size}")
+            except Exception as e:
+                print(f"⚠️ Failed to read tokenizer.json: {e}. Using default: {vocab_size}")
+        else:
+             print(f"⚠️ Tokenizer not found at {self.tokenizer_path}. Using default vocab size: {vocab_size}")
+
+        # 3. 【真の完全網羅】全パラメータ定義
         full_defaults = {
-            # --- 基本構造 ---
-            'encoder_structure': 'hybrid',
+            # --- 必須モデル構造 ---
+            'num_tokens': vocab_size, # 【今回追加】これが欠けていました
+            'max_seq_len': 512,
             'dim': 256,
-            'channels': 1,       # 必須: 1 (int)
+            'encoder_structure': 'hybrid',
+            'decoder_structure': 'transformer',
+            
+            # --- エンコーダー ---
+            'backbone_layers': [2, 3, 7],
+            'encoder_depth': 4,
+            'channels': 1,
             'patch_size': 16,
             
-            # --- エンコーダー詳細 (ここがエラーの主戦場) ---
-            'backbone_layers': [2, 3, 7],
-            'encoder_depth': 4,  # 前回のエラー原因
-            'num_layers': 4,     # encoder_depthのエイリアスとして使われる可能性への保険
-            'heads': 8,          # エンコーダーのヘッド数
+            # --- デコーダー ---
+            'num_layers': 4,
+            'heads': 8,
+            'ff_dim': 1024,
+            'dropout': 0.1,
+            'emb_dropout': 0.1,
             
-            # --- デコーダー詳細 ---
+            # --- decoder_args (ネスト用: pix2texの実装によってはここを見る) ---
             'decoder_args': {
                 'max_seq_len': 512,
                 'dim': 256,
                 'num_layers': 4,
                 'heads': 8,
                 'dropout': 0.1,
-                'ff_dim': 1024,  # 追加: FeedForwardの次元
+                'num_tokens': vocab_size, # ここにも念のため
+                'ff_dim': 1024,
             },
             
             # --- 画像サイズ (int保証) ---
@@ -49,30 +75,42 @@ class RobustLatexOCR:
             'min_height': 32,
             'min_width': 32,
             
-            # --- トークン・学習設定 (推論でも参照される可能性あり) ---
+            # --- トークンID ---
             'pad_token': 0,
             'bos_token': 1,
             'eos_token': 2,
+            'unk_token': 3,
+            
+            # --- 学習・システム設定 ---
             'temperature': 0.2,
-            'dropout': 0.1,
-            'emb_dropout': 0.1,
-            'micro_batchsize': -1,
             'batchsize': 10,
+            'micro_batchsize': -1,
             'optimizer': 'AdamW',
             'scheduler': 'OneCycleLR',
             'lr': 0.001,
+            'min_lr': 0.0001,
+            'weight_decay': 0.05,
             'seed': 42,
-            'id': None,
-            'name': 'math_ocr_model',
+            'epochs': 10,
+            'wandb': False,
+            'device': 'cpu',
             'gpu_devices': [],
+            'sample_freq': 2000,
+            'val_freq': 1,
+            'log_freq': 100,
+            'workers': 1,
             
             # --- システム設定 ---
             'checkpoint': self.weights,
+            'tokenizer': self.tokenizer_path,
+            'id': None,
+            'name': 'math_ocr_model',
             'no_cuda': True,
             'no_resize': False,
+            'config': self.clean_config_path,
         }
 
-        # 3. ユーザー設定のロード (参考程度)
+        # 4. ユーザー設定のロード (参考程度)
         user_config = {}
         try:
             if os.path.exists(self.raw_config_path):
@@ -82,25 +120,23 @@ class RobustLatexOCR:
         except Exception:
             pass
 
-        # 4. 安全なマージ (本当に安全なキーのみ許可)
-        # リスト型や構造を壊す可能性のあるキーは一切取り込まない
-        safe_keys = ['temperature', 'patch_size', 'dim', 'encoder_depth', 'heads', 'num_layers']
-        for k in safe_keys:
-            if k in user_config and isinstance(user_config[k], (int, float)):
-                full_defaults[k] = user_config[k]
-                
-        # decoder_args は辞書として慎重に更新
-        if 'decoder_args' in user_config and isinstance(user_config['decoder_args'], dict):
-            for k, v in user_config['decoder_args'].items():
-                if k in full_defaults['decoder_args'] and isinstance(v, (int, float)):
-                    full_defaults['decoder_args'][k] = v
+        # 5. 安全なマージ
+        for k, v in user_config.items():
+            # リスト型の寸法指定は展開して取り込む
+            if k == 'max_dimensions' and isinstance(v, list):
+                full_defaults['max_height'] = int(v[0])
+                full_defaults['max_width'] = int(v[1])
+            elif k == 'min_dimensions' and isinstance(v, list):
+                full_defaults['min_height'] = int(v[0])
+                full_defaults['min_width'] = int(v[1])
+            # 基本型のみ取り込む
+            elif k in full_defaults and isinstance(v, (int, float, str, bool)):
+                full_defaults[k] = v
+            # decoder_argsのマージ
+            elif k == 'decoder_args' and isinstance(v, dict):
+                full_defaults['decoder_args'].update(v)
 
-        # サイズ情報のマージ (リスト -> int 変換)
-        if 'max_dimensions' in user_config and isinstance(user_config['max_dimensions'], list):
-            full_defaults['max_height'] = int(user_config['max_dimensions'][0])
-            full_defaults['max_width'] = int(user_config['max_dimensions'][1])
-
-        # 5. クリーンな設定ファイルの保存
+        # 6. クリーンな設定ファイルの保存
         try:
             with open(self.clean_config_path, 'w', encoding='utf-8') as f:
                 yaml.dump(full_defaults, f)
@@ -108,16 +144,13 @@ class RobustLatexOCR:
         except Exception as e:
             raise RuntimeError(f"Failed to write clean config: {e}")
         
-        # 6. Namespace生成
-        full_defaults['config'] = self.clean_config_path
+        # 7. Namespace生成
         args = Namespace(**full_defaults)
         
-        # 最終パラメータ確認
-        print(f"🚀 Initializing LatexOCR with SAFE DEFAULTS:")
+        print(f"🚀 Initializing LatexOCR with:")
+        print(f"   - num_tokens: {args.num_tokens}") # 確認用ログ
         print(f"   - encoder_depth: {args.encoder_depth}")
-        print(f"   - heads: {args.heads}")
         print(f"   - dim: {args.dim}")
-        print(f"   - channels: {args.channels} (Must be 1)")
         
         try:
             self.engine = LatexOCR(args)
@@ -125,7 +158,6 @@ class RobustLatexOCR:
                 self.engine.model.cuda()
             print("✅ Model initialized successfully!")
         except Exception as e:
-            # エラーが出た場合、どの属性が不足していたかを知るためのトレース
             import traceback
             traceback.print_exc()
             raise RuntimeError(f"Model Init Failed: {e}")
