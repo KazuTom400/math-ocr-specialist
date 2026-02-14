@@ -1,20 +1,39 @@
 import streamlit as st
 import os
 import io
-import json
 from PIL import Image
-from streamlit_drawable_canvas import st_canvas
+from docx import Document
 from src.loader import RobustLatexOCR
 
-# --- 1. 専門パレットの設定 ---
+# --- 1. 物理・数学 専門辞書 ---
+MATH_PHYSICS_DICT = {
+    "\\times 10 ^ {": " \\times 10^{",
+    "cm ^ { 2 }": "\\text{cm}^2",
+    "m / s ^ { 2 }": "\\text{m/s}^2",
+    "p h i": "\\phi",
+    "t h e t a": "\\theta",
+    "o m e g a": "\\omega",
+    "h b a r": "\\hbar",
+    "i n f t y": "\\infty",
+    "p i": "\\pi",
+}
+
+def refine_latex(text):
+    text = text.replace("$", "").strip()
+    for raw, refined in MATH_PHYSICS_DICT.items():
+        text = text.replace(raw, refined)
+    return text
+
+# --- 2. 専門パレットの設定 ---
 GREEK_LETTERS = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "lambda", "mu", "pi", "rho", "sigma", "tau", "phi", "omega"]
 KEYBOARD_CHARS = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "+", "-", "=", "(", ")", "^", "_", "/", "*"]
 
-# --- 2. ページ設定 ---
+# --- 3. ページ設定 (絶対にTypeErrorを出さない設定) ---
 st.set_page_config(page_title="MathOCR Specialist", layout="wide", page_icon="🎯")
 st.title("🎯 MathOCR Specialist")
+st.caption("研究・卒論用：絶対安定稼働モード（Canvasライブラリ非依存）")
 
-# --- 3. エンジンロード ---
+# --- 4. エンジンロード ---
 @st.cache_resource
 def load_engine():
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -23,109 +42,84 @@ def load_engine():
 
 ocr = load_engine()
 
-# セッション状態の初期化
 if "latex_res" not in st.session_state:
     st.session_state.latex_res = ""
 
+# --- 5. メイン UI ---
 uploaded_file = st.sidebar.file_uploader("📷 数式画像をアップロード", type=["jpg", "png", "jpeg"])
 
 if uploaded_file:
+    # 画像の読み込み
     img_raw = Image.open(uploaded_file).convert("RGB")
+    w, h = img_raw.size
     
-    col_img, col_ctrl = st.columns([6, 4])
+    col_img, col_ctrl = st.columns([1, 1])
     
     with col_img:
-        st.subheader("📏 解析範囲をマウスで囲んでください")
+        st.subheader("📏 解析範囲の指定")
+        st.info("スライダーを動かして数式を「ターゲット範囲」に収めてください。")
         
-        # 表示サイズの計算
-        CANVAS_WIDTH = 750
-        scale = CANVAS_WIDTH / img_raw.width
-        canvas_height = int(img_raw.height * scale)
-        img_resized = img_raw.resize((CANVAS_WIDTH, canvas_height), resample=Image.LANCZOS)
+        # 左右と上下の範囲をスライダーで指定（これが一番確実です）
+        x_range = st.slider("左右の範囲（X座標）", 0, w, (int(w*0.2), int(w*0.8)))
+        y_range = st.slider("上下の範囲（Y座標）", 0, h, (int(h*0.3), int(h*0.7)))
         
-        # 【真っ白バグ回避の決定打】
-        # 画像オブジェクトを直接渡さず、一度ファイルに保存して「パス」で渡す
-        temp_bg_path = os.path.join("assets", "temp_bg.png")
-        img_resized.save(temp_bg_path)
+        # 切り抜き（ROI）
+        left, right = x_range
+        top, bottom = y_range
         
-        # 描画キャンバス
-        canvas_result = st_canvas(
-            fill_color="rgba(255, 165, 0, 0.3)",
-            stroke_width=2,
-            stroke_color="#e67e22",
-            # 地雷回避：オブジェクト(img_resized)ではなくパス(temp_bg_path)を渡す
-            background_image=Image.open(temp_bg_path), 
-            update_streamlit=True,
-            height=canvas_height,
-            width=CANVAS_WIDTH,
-            drawing_mode="rect",
-            key="canvas_final_fix", 
-        )
-        st.caption("※マウスでドラッグして数式を囲むと、右側にプレビューが表示されます。")
+        # 1px以上の幅を保証
+        if right <= left: right = left + 1
+        if bottom <= top: bottom = top + 1
+        
+        crop = img_raw.crop((left, top, right, bottom))
+        
+        # 100%確実に表示される st.image
+        # use_container_width は使わず、1.29.0互換の引数を使用
+        st.image(crop, caption="ターゲット範囲（AIがここを読み取ります）", use_column_width=True)
 
     with col_ctrl:
-        st.subheader("📝 修正 & 専門パレット")
+        st.subheader("🚀 解析・修正パレット")
         
-        if canvas_result.json_data is not None:
-            objects = canvas_result.json_data["objects"]
-            if len(objects) > 0:
-                obj = objects[-1]
-                l, t = int(obj["left"]/scale), int(obj["top"]/scale)
-                w, h = int(obj["width"]/scale), int(obj["height"]/scale)
-                
-                # 負のサイズ防止
-                w, h = max(w, 1), max(h, 1)
-                crop = img_raw.crop((l, t, l + w, t + h))
-                
-                # 地雷2：use_container_width ではなく use_column_width
-                st.image(crop, caption="選択範囲のプレビュー", use_column_width=True)
-                
-                if st.button("✨ この範囲を解析実行"):
-                    with st.spinner("AI解析中..."):
-                        res = ocr.predict(crop)
-                        st.session_state.latex_res = res.replace("$", "").strip()
+        if st.button("✨ この範囲を解析実行"):
+            with st.spinner("AI物理エンジン起動中..."):
+                try:
+                    res = ocr.predict(crop)
+                    st.session_state.latex_res = refine_latex(res)
+                except Exception as e:
+                    st.error(f"解析エラー: {e}")
 
-        # --- 【あなたの最強機能：修正パレット】 ---
         if st.session_state.latex_res:
             st.divider()
             
-            # ルート1: ピンポイント文字修正
-            st.markdown("**⌨️ ルート1: 文字指定修正**")
+            # 手動修正セクション
             current = st.session_state.latex_res
             c1, c2, c3 = st.columns([1, 2, 1])
-            target_idx = c1.number_input("位置", 1, len(current) if len(current)>0 else 1, 1)
-            
-            idx_zero = target_idx - 1
-            char_now = current[idx_zero] if idx_zero < len(current) else ""
-            new_val = c2.text_input(f"修正（現在: '{char_now}'）", value=char_now)
-            
+            t_idx = c1.number_input("位置", 1, len(current) if len(current)>0 else 1, 1)
+            new_char = c2.text_input(f"修正（現在: '{current[t_idx-1]}'）", value=current[t_idx-1])
             if c3.button("適用"):
                 l_list = list(current)
-                if idx_zero < len(l_list):
-                    l_list[idx_zero] = new_val
-                    st.session_state.latex_res = "".join(l_list)
-                    st.rerun()
+                l_list[t_idx-1] = new_char
+                st.session_state.latex_res = "".join(l_list)
+                st.rerun()
 
-            # ルート2: 専門文字パレット (Tab分け)
-            st.markdown("**🌿 ルート2: 特殊記号パレット**")
+            # 専門パレット
             tab_greek, tab_kb = st.tabs(["ギリシャ文字", "数字・演算子"])
-            
             with tab_greek:
                 cols = st.columns(5)
                 for i, g in enumerate(GREEK_LETTERS):
-                    if cols[i % 5].button(f"\\{g}", key=f"g_{g}"):
+                    if cols[i % 5].button(f"\\{g}", key=f"p_{g}"):
                         st.session_state.latex_res += f" \\{g}"
                         st.rerun()
             
             with tab_kb:
                 cols = st.columns(6)
                 for i, k in enumerate(KEYBOARD_CHARS):
-                    if cols[i % 6].button(k, key=f"k_{k}"):
+                    if cols[i % 6].button(k, key=f"p_{k}"):
                         st.session_state.latex_res += k
                         st.rerun()
 
-            st.success("現在のLaTeX:")
+            st.success("解析結果（LaTeX）:")
             st.code(st.session_state.latex_res)
             st.latex(st.session_state.latex_res)
 else:
-    st.info("左側のサイドバーから数式画像をアップロードしてください。")
+    st.info("サイドバーから画像をアップロードしてください。")
