@@ -1,116 +1,112 @@
 import streamlit as st
-from streamlit_drawable_canvas import st_canvas
+import os
 from PIL import Image
-from docx import Document
-import io, re, os
-import numpy as np
+from streamlit_drawable_canvas import st_canvas
 from src.loader import RobustLatexOCR
 
-# --- プロダクト・グレードのキャッシュ戦略 ---
+# --- ページ設定 ---
+st.set_page_config(page_title="MathOCR Specialist", layout="centered")
+
+# --- CSSで見た目を調整 ---
+st.markdown("""
+<style>
+    .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
+    }
+    h1 {
+        text-align: center;
+        color: #333;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+st.title("MathOCR ROI Specialist")
+st.markdown("画像をアップロードし、**数式部分をマウスで囲って**ください。")
+
+# --- AIエンジンのロード（キャッシュ化） ---
 @st.cache_resource
-def get_ocr_expert():
-    # アセットの場所を指定（相対パスで管理）
-    asset_dir = os.path.join(os.path.dirname(__file__), "assets")
+def load_engine():
+    # パスを絶対パスで解決
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    asset_dir = os.path.join(base_dir, "assets")
     return RobustLatexOCR(asset_dir)
 
-st.set_page_config(page_title="MathOCR Specialist", layout="wide")
-
-# --- 専門家の召喚 ---
 try:
-    ocr_expert = get_ocr_expert()
+    ocr_engine = load_engine()
+    st.success("✅ AI Engine Loaded Successfully")
 except Exception as e:
-    st.error(f"🚨 システム初期化エラー: {e}")
-    st.info("GitHub LFSで .pth ファイルが正しく取得されているか、assets フォルダを確認してください。")
+    st.error(f"🚨 Engine Initialization Failed: {e}")
     st.stop()
 
-st.title("🎯 数式ターゲット・スキャナー")
-
-# セッション管理
-if 'latex_results' not in st.session_state:
-    st.session_state['latex_results'] = []
-
-# --- 物理数学辞書 (35種) ---
-PM_BOSS_DICT = {
-    "a": [r"a", r"\alpha", r"\mathbf{a}", r"A", r"\mathcal{A}", r"\hat{a}"],
-    "b": [r"b", r"\beta", r"B", r"\mathbf{B}"],
-    "d": [r"d", r"\delta", r"\Delta", r"\partial", r"\nabla"],
-    "e": [r"e", r"E", r"\epsilon", r"\varepsilon"],
-    "f": [r"f", r"F", r"\phi", r"\varphi", r"\Phi"],
-    "g": [r"g", r"G", r"\gamma", r"\Gamma"],
-    "h": [r"h", r"\hbar", r"H", r"\hat{H}", r"\mathcal{H}"],
-    "l": [r"l", r"\ell", r"L", r"\lambda", r"\Lambda"],
-    "p": [r"p", r"\psi", r"\Psi", r"\rho", r"\phi"],
-    "w": [r"w", r"W", r"\omega", r"\Omega"],
-    # ... 他、必要に応じて追加
-}
-
-# --- 共通ロジック ---
-def update_latex(key, target, replacement, n):
-    st.session_state[key] = replace_occurrence(st.session_state[key], target, replacement, n)
-
-def replace_occurrence(text, target, replacement, n):
-    if target.startswith('\\'):
-        return re.sub(re.escape(target) + r'(?![a-zA-Z])', replacement, text)
-    pattern = r'(\\[a-zA-Z]+)|(' + re.escape(target) + r')'
-    if n == -1:
-        return re.sub(pattern, lambda m: m.group(1) if m.group(1) else replacement, text)
-    matches = list(re.finditer(pattern, text))
-    targets = [m for m in matches if m.group(2)]
-    if not targets or n >= len(targets): return text
-    m = targets[n]
-    return text[:m.start()] + replacement + text[m.end():]
-
-# --- メイン UI ---
-uploaded_file = st.sidebar.file_uploader("数式画像を投入", type=['png', 'jpg', 'jpeg'])
+# --- 画像アップロード ---
+uploaded_file = st.file_uploader("Upload Image", type=["jpg", "png", "jpeg"])
 
 if uploaded_file:
-    img = Image.open(uploaded_file)
-    display_width = 1000
-    scale = display_width / img.width
-    display_height = int(img.height * scale)
+    # 1. 画像を開く
+    raw_image = Image.open(uploaded_file).convert("RGB")
+    original_w, original_h = raw_image.size
 
-    st.subheader("1. 範囲選択")
+    # 2. 表示サイズを計算 (レスポンシブ対応)
+    # キャンバスの幅を700pxに固定し、高さを比率に合わせて自動計算
+    CANVAS_WIDTH = 700
+    scale_factor = CANVAS_WIDTH / original_w
+    canvas_height = int(original_h * scale_factor)
+    
+    # 表示用にリサイズした画像を作成
+    display_image = raw_image.resize((CANVAS_WIDTH, canvas_height))
+
+    # 3. キャンバスの表示
+    # ユーザーは「縮小された画像」の上で操作する
     canvas_result = st_canvas(
-        fill_color="rgba(255, 165, 0, 0.2)",
-        background_image=img.resize((display_width, display_height)),
-        height=display_height, width=display_width,
-        drawing_mode="rect", key="math_canvas"
+        fill_color="rgba(255, 165, 0, 0.3)",  # 選択範囲の色
+        stroke_width=2,
+        stroke_color="#FF4B4B",
+        background_image=display_image,
+        update_streamlit=True,
+        height=canvas_height,
+        width=CANVAS_WIDTH,
+        drawing_mode="rect",  # 四角形選択モード
+        key="canvas",
     )
 
-    if st.button("🚀 解析開始"):
-        if canvas_result.json_data and canvas_result.json_data["objects"]:
-            st.session_state['latex_results'] = [] 
-            for i, obj in enumerate(canvas_result.json_data["objects"]):
-                c_l, c_t, c_w, c_h = obj["left"], obj["top"], obj["width"], obj["height"]
-                if c_w < 0: c_l, c_w = c_l + c_w, abs(c_w)
-                if c_h < 0: c_t, c_h = c_t + c_h, abs(c_h)
-                cropped = img.crop((int(c_l/scale), int(c_t/scale), int((c_l+c_w)/scale), int((c_t+c_h)/scale)))
-                try:
-                    latex = ocr_expert.predict(cropped)
-                    st.session_state['latex_results'].append({"id": i, "latex": latex, "crop_img": cropped})
-                except Exception as e:
-                    st.error(f"解析失敗: {e}")
-            st.rerun()
+    # 4. 解析実行ボタン
+    if st.button("🚀 Convert to LaTeX"):
+        # 選択範囲があるかチェック
+        if canvas_result.json_data is not None:
+            objects = canvas_result.json_data["objects"]
+            
+            if len(objects) > 0:
+                # 最新のボックスを取得
+                obj = objects[-1]
+                
+                # 5. 座標の逆変換 (重要！)
+                # 表示画面(700px)での座標を、元の高画質画像の座標に戻す
+                left = int(obj["left"] / scale_factor)
+                top = int(obj["top"] / scale_factor)
+                width = int(obj["width"] / scale_factor)
+                height = int(obj["height"] / scale_factor)
+                
+                # クロップ（元画像から切り抜き）
+                cropped_img = raw_image.crop((left, top, left + width, top + height))
+                
+                # 確認用に切り抜いた画像を表示（サイドバーなど）
+                with st.expander("Processing Crop..."):
+                    st.image(cropped_img, caption="AI Input High-Res Crop")
 
-    if st.session_state['latex_results']:
-        st.markdown("---")
-        st.subheader("2. ハイブリッド修正")
-        all_final = ""
-        for idx, item in enumerate(st.session_state['latex_results']):
-            edit_key = f"edit_{idx}"
-            if edit_key not in st.session_state: st.session_state[edit_key] = item['latex']
-            with st.expander(f"数式 {idx+1}", expanded=True):
-                col1, col2 = st.columns([1, 2])
-                with col1: st.image(item['crop_img'], use_column_width=True)
-                with col2: current = st.text_area("LaTeX編集", key=edit_key, height=100)
-                # ( ... 辞書置換ロジック ... )
-                st.latex(current)
-                all_final += current + "\n\n"
-
-        if st.button("📝 すべてをWordに保存"):
-            doc = Document()
-            for line in all_final.split('\n'):
-                if line.strip(): doc.add_paragraph(line.strip())
-            bio = io.BytesIO()
-            doc.save(bio)
-            st.download_button("📥 Wordファイルをダウンロード", bio.getvalue(), "math_results.docx")
+                # AI推論実行
+                with st.spinner("Analyzing math formula..."):
+                    try:
+                        latex_code = ocr_engine.predict(cropped_img)
+                        
+                        st.divider()
+                        st.subheader("Result")
+                        # LaTeXとしてレンダリング
+                        st.latex(latex_code.replace("$", ""))
+                        # コピー用コードブロック
+                        st.code(latex_code, language="latex")
+                        
+                    except Exception as e:
+                        st.error(f"Prediction Error: {e}")
+            else:
+                st.warning("⚠️ Please draw a box around the formula first.")
