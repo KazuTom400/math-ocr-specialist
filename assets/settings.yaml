@@ -1,0 +1,16 @@
+backbone_layers: [2, 3, 7]
+channels: [64, 128, 256, 512]
+num_layers: 4
+max_dimensions: [1024, 512]
+min_dimensions: [32, 32]
+max_width: 1024
+max_height: 512
+max_seq_len: 512
+temperature: 0.00001
+patch_size: 16
+emb_dim: 256
+dec_layers: 4
+nhead: 8
+resizer: true
+gray: true
+bit_depth: false

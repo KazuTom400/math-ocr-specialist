@@ -1,0 +1,117 @@
+PHYSICS_MATH_FINAL_BOSS_DICT = {
+    # --- 【a】 加速度・角度・演算子 ---
+    "a": [r"a", r"\mathbf{a}", r"\alpha", r"A", r"\mathcal{A}", r"\hat{a}", r"\hat{a}^\dagger", r"\propto"],
+    # 加速度(ベクトル)、アルファ、ベクトルポテンシャル、消滅・生成演算子、比例(propto)
+
+    # --- 【b】 磁場・ベータ ---
+    "b": [r"b", r"B", r"\mathbf{B}", r"\beta", r"\vec{b}", r"\mathcal{B}"],
+    # 磁場(ベクトル)、ベータ、基底(B)
+
+    # --- 【c】 定数・複素数 ---
+    "c": [r"c", r"C", r"\mathbb{C}", r"\chi", r"\cos"],
+    # 光速、積分定数、複素数集合(黒板太字)、カイ
+
+    # --- 【d】 解析学の主役 ---
+    "d": [r"d", r"\delta", r"\Delta", r"\partial", r"\nabla", r"\dagger", r"D", r"\mathrm{d}"],
+    # 微分、デルタ(小/大)、偏微分、ナブラ、随伴(ダガー)、直立体d(解析学のこだわり)
+
+    # --- 【e】 電荷・電場・指数 ---
+    "e": [r"e", r"E", r"\mathbf{E}", r"\epsilon", r"\varepsilon", r"\exp", r"\eta"],
+    # 電子、電場、誘電率(2種)、指数関数、エータ(効率)
+
+    # --- 【f】 関数・力・位相 ---
+    "f": [r"f", r"F", r"\mathbf{F}", r"\phi", r"\varphi", r"\Phi", r"f_{i}"],
+    # 関数、力(ベクトル)、ポテンシャル・位相(3種)、添え字付きf
+
+    # --- 【g】 重力・計量・ガンマ ---
+    "g": [r"g", r"G", r"\mathbf{g}", r"\gamma", r"\Gamma", r"g_{\mu\nu}"],
+    # 重力加速度、引力定数、比熱比、ガンマ(大)、計量テンソル
+
+    # --- 【h】 量子力学の本質 ---
+    "h": [r"h", r"\hbar", r"H", r"\hat{H}", r"\mathcal{H}", r"\eta"],
+    # プランク定数、エイチバー、ハミルトニアン、ヒルベルト空間、エータ
+
+    # --- 【i】 虚数・添え字 ---
+    "i": [r"i", r"I", r"\mathbf{I}", r"\iota", r"\infty", r"j"],
+    # 虚数単位、慣性モーメント、単位行列、イオタ、無限大、j(工学系虚数)
+
+    # --- 【j】 電流・角運動量 ---
+    "j": [r"j", r"J", r"\mathbf{J}", r"\mathbf{j}", r"\mathcal{J}", r"j_{0}"],
+    # 虚数単位、全角運動量、電流密度(スカラー/ベクトル)、ベッセル関数
+
+    # --- 【k】 波数・定数・曲率 ---
+    "k": [r"k", r"\mathbf{k}", r"K", r"\kappa", r"k_{B}", r"\lambda"],
+    # 波数、ボルツマン定数、曲率、波長(lambdaとの誤読対策)
+
+    # --- 【l】 角運動量・波長 ---
+    "l": [r"l", r"\ell", r"L", r"\mathbf{L}", r"\lambda", r"\Lambda", r"\mathcal{L}"],
+    # 筆記体エル、波長、角運動量(大/ベクトル)、ラグランジアン
+
+    # --- 【m】 質量・磁気・透磁率 ---
+    "m": [r"m", r"M", r"\mu", r"\mathbf{m}", r"\min"],
+    # 質量、透磁率・化学ポテンシャル、磁気モーメント
+
+    # --- 【n】 量子数・ナブラ・屈折率 ---
+    "n": [r"n", r"N", r"\nu", r"\eta", r"\nabla", r"\vec{n}"],
+    # 量子数、ニュートリノ・周波数、効率、ナブラ、法線ベクトル
+
+    # --- 【o】 角度・オーダー ---
+    "o": [r"o", r"O", r"\mathcal{O}", r"\theta", r"\omega", r"0"],
+    # オーダー、角度(theta)、角速度(omega)、ゼロ(0)
+
+    # --- 【p】 運動量・圧力・密度 ---
+    "p": [r"p", r"\mathbf{p}", r"P", r"\rho", r"\phi", r"\psi", r"\Phi", r"\varpi"],
+    # 運動量、圧力、密度(rho)、位相、波動関数(psi)
+
+    # --- 【q】 電荷・一般化座標 ---
+    "q": [r"q", r"Q", r"\mathbf{q}", r"q_{i}", r"\dot{q}"],
+    # 電荷、一般化座標、時間微分(dot)
+
+    # --- 【r】 位置・半径・密度 ---
+    "r": [r"r", r"\mathbf{r}", r"R", r"\mathbb{R}", r"\rho", r"\gamma"],
+    # 位置ベクトル、実数集合、密度、比熱比
+
+    # --- 【s】 スピン・エントロピー・和 ---
+    "s": [r"s", r"S", r"\mathbf{s}", r"\sigma", r"\Sigma", r"\mathcal{S}"],
+    # スピン、エントロピー、断面積、和の記号(大)
+
+    # --- 【t】 時間・温度・角度 ---
+    "t": [r"t", r"T", r"\tau", r"\theta", r"\Theta", r"\dagger", r"\times"],
+    # 時間、温度、時定数、角度、複素共役転置、かける(times)
+
+    # --- 【u】 速度・ポテンシャル ---
+    "u": [r"u", r"U", r"\mathbf{u}", r"\mu", r"\upsilon"],
+    # 速度、内部エネルギー、化学ポテンシャル、ウプシロン
+
+    # --- 【v】 速度・体積・頻度 ---
+    "v": [r"v", r"\mathbf{v}", r"V", r"\nu", r"\Upsilon", r"\vec{v}"],
+    # 速度、体積、ポテンシャル、周波数、ニュートリノ
+
+    # --- 【w】 仕事・角速度 ---
+    "w": [r"w", r"W", r"\omega", r"\Omega", r"\mathbf{w}"],
+    # 仕事、角速度、オメガ(大)
+
+    # --- 【x】 座標・磁化率 ---
+    "x": [r"x", r"\mathbf{x}", r"\chi", r"\xi", r"\Xi", r"\times"],
+    # 座標、磁化率、無次元量(xi)、乗算
+
+    # --- 【y】 座標・波動関数 ---
+    "y": [r"y", r"Y", r"\psi", r"\Psi", r"\gamma", r"\eta"],
+    # 座標、球面調和関数、波動関数、比熱比、エータ
+
+    # --- 【z】 複素数・分配関数 ---
+    "z": [r"z", r"Z", r"\zeta", r"\mathbb{Z}", r"\bar{z}"],
+    # 複素数、分配関数、ゼータ、整数集合、複素共役
+
+    # --- 【ここから追加：特殊記号・ギリシャ文字系】 ---
+    "theta": [r"\theta", r"\vartheta", r"\Theta", r"0"], # 角度のバリエーション
+    "phi": [r"\phi", r"\varphi", r"\Phi"],              # 位相のバリエーション
+    "rho": [r"\rho", r"p", r"P"],                       # 密度と圧力の混同対策
+    "sigma": [r"\sigma", r"\Sigma", r"s", r"6"],        # スピンと和と数字の6
+    "omega": [r"\omega", r"\Omega", r"w"],              # 角速度と抵抗
+    "lambda": [r"\lambda", r"\Lambda", r"l", r"h"],      # 波長と長さ
+    "gamma": [r"\gamma", r"\Gamma", r"y", r"g"],         # ガンマと座標
+    "delta": [r"\delta", r"\Delta", r"d", r"\partial"],  # 微分系
+    "sum": [r"\sum", r"\Sigma", r"s"],                   # 和の記号
+    "int": [r"\int", r"\iint", r"\oint", r"I"]           # 積分記号のバリエーション
+}
