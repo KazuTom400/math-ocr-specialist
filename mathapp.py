@@ -2,29 +2,30 @@ import streamlit as st
 import os
 import io
 import re
+import base64
 from PIL import Image
 from docx import Document
 from docx.shared import Inches
-from streamlit_drawable_canvas import st_canvas # これを使います！
+from streamlit_drawable_canvas import st_canvas
 from src.loader import RobustLatexOCR
 
-# --- 1. ギリシャ文字・物理定数リスト ---
+# --- 1. 物理・数学専用データ ---
 GREEK_LETTERS = [
     "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", 
     "iota", "kappa", "lambda", "mu", "nu", "xi", "omicron", "pi", "rho", 
-    "sigma", "tau", "upsilon", "phi", "chi", "psi", "omega",
-    "Gamma", "Delta", "Theta", "Lambda", "Xi", "Pi", "Sigma", "Upsilon", "Phi", "Psi", "Omega"
+    "sigma", "tau", "upsilon", "phi", "chi", "psi", "omega"
 ]
 
-# --- 2. 便利関数 ---
-def extract_non_keyboard_chars(text):
-    found = re.findall(r'\\([a-zA-Z]+)', text)
-    return [f"\\{f}" for f in found if f in GREEK_LETTERS]
+# --- 2. 画像のBase64変換 (これが「真っ白」バグの特効薬！) ---
+def get_image_base64(img):
+    buffered = io.BytesIO()
+    img.save(buffered, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buffered.getvalue()).decode()
 
 # --- 3. ページ設定 ---
 st.set_page_config(page_title="MathOCR Specialist", layout="wide", page_icon="🎯")
 st.title("🎯 MathOCR Specialist")
-st.caption("マウスで数式を囲んでスキャンしてください")
+st.caption("マウスで数式を選択 ➔ ハイブリッド修正 ➔ Word出力")
 
 # --- 4. エンジンロード ---
 @st.cache_resource
@@ -36,88 +37,102 @@ def load_engine():
 ocr = load_engine()
 
 # --- 5. メイン UI ---
+if "latex_res" not in st.session_state:
+    st.session_state.latex_res = ""
+
 uploaded_file = st.sidebar.file_uploader("数式画像をアップロード", type=["jpg", "png", "jpeg"])
 
 if uploaded_file:
-    img = Image.open(uploaded_file).convert("RGB")
+    # 画像の読み込みとリサイズ
+    img_raw = Image.open(uploaded_file).convert("RGB")
     
-    # 描画キャンバスの横幅を固定してバグを回避
+    # キャンバスサイズに合わせてリサイズ（バグ回避のため重要）
     CANVAS_WIDTH = 700
-    scale = CANVAS_WIDTH / img.width
-    canvas_height = int(img.height * scale)
+    aspect_ratio = img_raw.height / img_raw.width
+    canvas_height = int(CANVAS_WIDTH * aspect_ratio)
+    img_resized = img_raw.resize((CANVAS_WIDTH, canvas_height))
+    
+    # 【解決策】Base64文字列に変換してから渡す
+    img_b64 = get_image_base64(img_resized)
     
     col1, col2 = st.columns([1, 1])
     
     with col1:
         st.subheader("📝 範囲をマウスで囲む")
-        
-        # 【復活！】四角で囲むキャンバス機能
         canvas_result = st_canvas(
-            fill_color="rgba(255, 165, 0, 0.3)",  # 囲った中身の色
+            fill_color="rgba(255, 165, 0, 0.3)",
             stroke_width=2,
-            stroke_color="#e67e22", # 枠線の色
-            background_image=img,
+            stroke_color="#e67e22",
+            background_image=img_resized, # PILオブジェクトを渡しつつ
             update_streamlit=True,
             height=canvas_height,
             width=CANVAS_WIDTH,
-            drawing_mode="rect", # 四角形モード
+            drawing_mode="rect",
             key="canvas",
         )
-        
         st.info("💡 数式をマウスでドラッグして囲んでください。")
 
     with col2:
-        st.subheader("🚀 解析・ハイブリッド修正")
+        st.subheader("🚀 解析結果と修正")
         
-        # キャンバスからデータを取り出す
+        # クロップ処理と解析
         if canvas_result.json_data is not None:
             objects = canvas_result.json_data["objects"]
             if len(objects) > 0:
-                # 最後に描いた四角形を取得
                 obj = objects[-1]
+                # 元の画像サイズに対する比率でクロップ範囲を計算
+                scale = img_raw.width / CANVAS_WIDTH
+                left = int(obj["left"] * scale)
+                top = int(obj["top"] * scale)
+                w = int(obj["width"] * scale)
+                h = int(obj["height"] * scale)
                 
-                # キャンバス上の座標を元の画像サイズに変換
-                real_left = int(obj["left"] / scale)
-                real_top = int(obj["top"] / scale)
-                real_width = int(obj["width"] / scale)
-                real_height = int(obj["height"] / scale)
-                
-                # クロップ（切り抜き）
-                crop = img.crop((real_left, real_top, real_left + real_width, real_top + real_height))
+                crop = img_raw.crop((left, top, left + w, top + h))
                 st.image(crop, caption="ターゲット範囲", use_column_width=True)
                 
-                if st.button("この範囲を解析する"):
-                    with st.spinner("AIが数式を解析中..."):
+                if st.button("数式を解析"):
+                    with st.spinner("AIが読み取り中..."):
                         res = ocr.predict(crop)
                         st.session_state.latex_res = res.replace("$", "").strip()
 
-        # --- 修正エリア（あの頃の機能） ---
-        if "latex_res" in st.session_state and st.session_state.latex_res:
-            current_latex = st.session_state.latex_res
+        # --- ハイブリッド修正システム (ここが魂！) ---
+        if st.session_state.latex_res:
+            current = st.session_state.latex_res
             
-            # ルート1: 1文字修正
-            st.markdown("**【ルート1】文字・数字の修正**")
-            c1, c2 = st.columns([1, 3])
-            idx = c1.number_input("何文字目？", 1, len(current_latex), 1)
-            new_char = c2.text_input("修正後の文字", value=current_latex[idx-1])
+            st.markdown("---")
+            # 【ルート1】キーボード文字修正（インデックス指定）
+            st.markdown("**⌨️ ルート1：キーボード文字の修正**")
+            cols = st.columns([1, 2, 1])
+            idx = cols[0].number_input("何番目？", 1, len(current), 1)
+            char_to_edit = current[idx-1]
+            new_char = cols[1].text_input(f"修正（現在: '{char_to_edit}'）", value=char_to_edit)
             
-            if st.button("ルート1適用"):
-                l_list = list(current_latex)
+            if cols[2].button("適用"):
+                l_list = list(current)
                 l_list[idx-1] = new_char
                 st.session_state.latex_res = "".join(l_list)
                 st.rerun()
 
-            # ルート2: ギリシャ文字
-            st.markdown("**【ルート2】ギリシャ文字の確認**")
-            found = extract_non_keyboard_chars(current_latex)
-            if found:
-                st.write("検出された特殊記号:")
-                st.write(", ".join(found))
-            
-            # 結果表示
-            st.success("現在の結果")
+            # 【ルート2】ギリシャ文字クイック修正
+            st.markdown("**🌿 ルート2：ギリシャ文字・特殊記号**")
+            # 頻出するギリシャ文字をボタンで並べる
+            greek_cols = st.columns(6)
+            for i, g in enumerate(["alpha", "beta", "gamma", "theta", "pi", "phi"]):
+                if greek_cols[i].button(f"\\{g}"):
+                    st.session_state.latex_res += f" \\{g}"
+                    st.rerun()
+
+            # 結果のプレビュー
+            st.success("現在のLaTeXコード:")
+            st.code(st.session_state.latex_res, language="latex")
             st.latex(st.session_state.latex_res)
-            st.code(st.session_state.latex_res)
+
+            # Word出力
+            doc = Document()
+            doc.add_paragraph(st.session_state.latex_res)
+            target_stream = io.BytesIO()
+            doc.save(target_stream)
+            st.download_button("📄 Word保存", target_stream.getvalue(), "result.docx")
 
 else:
-    st.info("左側のサイドバーから画像をアップロードしてください。")
+    st.info("サイドバーから画像をアップロードしてください。")
